@@ -4,6 +4,8 @@ import { headers } from "next/headers";
 import Stripe from "stripe";
 import { clerkClient } from "@clerk/nextjs/server";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(req: Request) {
     const body = await req.text();
     const headersList = await headers();
