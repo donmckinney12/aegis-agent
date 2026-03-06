@@ -22,7 +22,7 @@ export default function PrivacyPage() {
                         We collect billing information and organization administrator emails via our payment processor (Stripe) and identity provider (Clerk) explicitly for the provisioning of SaaS services.
                     </p>
 
-                    <h2 className="text-xl font-semibold mt-8 mb-4 text-foreground">3. GDPA and CCPA Compliance</h2>
+                    <h2 className="text-xl font-semibold mt-8 mb-4 text-foreground">3. GDPR and CCPA Compliance</h2>
                     <p className="text-foreground/80 leading-relaxed">
                         You retain full ownership of your agent telemetry. You may export or purge your compliance logs via the dashboard or API at any instant. Address all data deletion requests to our DPO at privacy@aegis-agent.id.
                     </p>

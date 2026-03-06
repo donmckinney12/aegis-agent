@@ -39,6 +39,7 @@ export function PublicFooter() {
                         <li><Link href="/contact" className="hover:text-primary transition-colors">Contact Sales</Link></li>
                         <li><Link href="/careers" className="hover:text-primary transition-colors">Careers</Link></li>
                         <li><Link href="/privacy" className="hover:text-primary transition-colors">Privacy Policy</Link></li>
+                        <li><Link href="/terms" className="hover:text-primary transition-colors">Terms of Service</Link></li>
                     </ul>
                 </div>
             </div>
