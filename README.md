@@ -1,7 +1,6 @@
 # Aegis-Agent ID: Zero-Trust Identity for AI Agents
 
-[![Deploy Backend](https://github.com/YOUR_USERNAME/aegis-agent-id/actions/workflows/deploy-backend.yml/badge.svg)](https://github.com/YOUR_USERNAME/aegis-agent-id/actions)
-[![Netlify Status](https://api.netlify.com/api/v1/badges/YOUR_BADGE_ID/deploy-status)](https://app.netlify.com/sites/YOUR_SITE)
+[![Deploy Backend](https://github.com/donmckinney12/aegis-agent/actions/workflows/deploy-backend.yml/badge.svg)](https://github.com/donmckinney12/aegis-agent/actions)
 
 > Enterprise-grade Zero-Trust Identity Control Plane for AI Agents. Cryptographic X.509 SVID identities via SPIFFE, enforced with an embedded Open Policy Agent (OPA) engine.
 
@@ -43,7 +42,7 @@
 ### SaaS Platform
 - **Clerk Authentication** — Production multi-tenancy with Clerk middleware protection
 - **Stripe Billing** — Checkout sessions, webhook processing, customer portal integration
-- **Marketing Site** — Landing page, Features, Pricing, Blog, Docs, Careers, Contact
+- **Marketing Site** — 29 pages total: Landing, Features, Pricing, Blog, Docs, API Reference, Careers, Security, Contact, About, Privacy Policy, Terms of Service
 - **Admin RBAC** — Role-based guards via Clerk `publicMetadata` (🔒 = admin-only pages)
 - **Toast Notifications** — Sonner-powered feedback on every interactive element
 
