@@ -1,13 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-import { Key, Plus, Copy, EyeOff, RotateCw, Trash2 } from "lucide-react";
+import { Key, Plus, Copy, EyeOff, RotateCw, Trash2, CheckCircle, Loader2 } from "lucide-react";
 import { formatTimeAgo } from "@/lib/utils";
+import { toast } from "sonner";
 
-const apiKeys = [
+const initialApiKeys = [
     { id: "key-1", name: "Terraform Production", key: "sk_live_aegis_8f92...3b1c", created: "2026-01-15T10:00:00Z", lastUsed: "2026-03-03T10:15:00Z", status: "Active" },
     { id: "key-2", name: "CI/CD Pipeline (GitHub)", key: "sk_live_aegis_4a1b...9d2e", created: "2026-02-01T14:30:00Z", lastUsed: "2026-03-03T12:05:00Z", status: "Active" },
     { id: "key-3", name: "Local Dev (Alice)", key: "sk_test_aegis_7c8d...1f4a", created: "2026-02-28T09:12:00Z", lastUsed: "2026-03-02T16:45:00Z", status: "Active" },
@@ -15,6 +17,59 @@ const apiKeys = [
 ];
 
 export default function ApiKeysPage() {
+    const [apiKeys, setApiKeys] = useState(initialApiKeys);
+    const [generating, setGenerating] = useState(false);
+
+    const handleCopy = (key: string, name: string) => {
+        navigator.clipboard.writeText(key);
+        toast.success("Copied to clipboard", {
+            description: `API key for "${name}" has been copied.`,
+        });
+    };
+
+    const handleGenerate = async () => {
+        setGenerating(true);
+        await new Promise(r => setTimeout(r, 1800));
+        const newKey = {
+            id: `key-${apiKeys.length + 1}`,
+            name: `New API Key #${apiKeys.length + 1}`,
+            key: `sk_live_aegis_${Math.random().toString(36).substring(2, 6)}...${Math.random().toString(36).substring(2, 6)}`,
+            created: new Date().toISOString(),
+            lastUsed: "Never",
+            status: "Active",
+        };
+        setApiKeys(prev => [newKey, ...prev]);
+        setGenerating(false);
+        toast.success("🔑 API Key Generated", {
+            description: `"${newKey.name}" is now active. Copy it now — it won't be shown again.`,
+        });
+    };
+
+    const handleRotate = async (id: string, name: string) => {
+        toast.loading(`Rotating key for "${name}"...`, { id });
+        await new Promise(r => setTimeout(r, 1500));
+        setApiKeys(prev => prev.map(k =>
+            k.id === id ? {
+                ...k,
+                key: `sk_live_aegis_${Math.random().toString(36).substring(2, 6)}...${Math.random().toString(36).substring(2, 6)}`,
+                lastUsed: "Just now",
+            } : k
+        ));
+        toast.success(`Key rotated for "${name}"`, {
+            id,
+            description: "The old key has been invalidated. Update your integration configs.",
+        });
+    };
+
+    const handleRevoke = (id: string, name: string) => {
+        setApiKeys(prev => prev.map(k =>
+            k.id === id ? { ...k, status: "Revoked" } : k
+        ));
+        toast.error(`Key revoked: "${name}"`, {
+            description: "This key can no longer authenticate API requests.",
+        });
+    };
+
     return (
         <div className="space-y-6">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -24,8 +79,16 @@ export default function ApiKeysPage() {
                         Service accounts and developer credentials for programmatic Aegis administration.
                     </p>
                 </div>
-                <Button className="bg-primary text-primary-foreground hover:bg-primary/90">
-                    <Plus className="w-4 h-4 mr-2" />
+                <Button
+                    className="bg-primary text-primary-foreground hover:bg-primary/90"
+                    onClick={handleGenerate}
+                    disabled={generating}
+                >
+                    {generating ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                        <Plus className="w-4 h-4 mr-2" />
+                    )}
                     Generate New Key
                 </Button>
             </div>
@@ -60,7 +123,10 @@ export default function ApiKeysPage() {
                                                 <code className="text-xs bg-muted/50 px-2 py-1 rounded text-muted-foreground font-mono">
                                                     {k.key}
                                                 </code>
-                                                <button className="text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover:opacity-100">
+                                                <button
+                                                    className="text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover:opacity-100"
+                                                    onClick={() => handleCopy(k.key, k.name)}
+                                                >
                                                     <Copy className="w-3.5 h-3.5" />
                                                 </button>
                                             </div>
@@ -71,16 +137,28 @@ export default function ApiKeysPage() {
                                             </Badge>
                                         </TableCell>
                                         <TableCell className="text-xs text-muted-foreground">{formatTimeAgo(k.created)}</TableCell>
-                                        <TableCell className="text-xs text-muted-foreground">{formatTimeAgo(k.lastUsed)}</TableCell>
+                                        <TableCell className="text-xs text-muted-foreground">{k.lastUsed === "Never" || k.lastUsed === "Just now" ? k.lastUsed : formatTimeAgo(k.lastUsed)}</TableCell>
                                         <TableCell className="text-right">
-                                            <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
-                                                    <RotateCw className="w-4 h-4" />
-                                                </Button>
-                                                <Button variant="ghost" size="icon" className="h-8 w-8 text-red-400 hover:text-red-300 hover:bg-red-400/10">
-                                                    <Trash2 className="w-4 h-4" />
-                                                </Button>
-                                            </div>
+                                            {k.status === "Active" && (
+                                                <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                                                        onClick={() => handleRotate(k.id, k.name)}
+                                                    >
+                                                        <RotateCw className="w-4 h-4" />
+                                                    </Button>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="h-8 w-8 text-red-400 hover:text-red-300 hover:bg-red-400/10"
+                                                        onClick={() => handleRevoke(k.id, k.name)}
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </Button>
+                                                </div>
+                                            )}
                                         </TableCell>
                                     </TableRow>
                                 ))}

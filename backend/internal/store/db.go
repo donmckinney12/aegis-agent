@@ -1,30 +1,30 @@
 package store
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/aegis-agent-id/backend/pkg/models"
-	_ "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DB struct {
-	conn *sql.DB
+	pool *pgxpool.Pool
 }
 
-func NewDB(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite", path)
+func NewDB(connString string) (*DB, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, connString)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	// Enable WAL mode for better concurrent reads
-	if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return nil, fmt.Errorf("set WAL: %w", err)
-	}
-	db := &DB{conn: conn}
+	db := &DB{pool: pool}
 	if err := db.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -32,7 +32,8 @@ func NewDB(path string) (*DB, error) {
 }
 
 func (db *DB) Close() error {
-	return db.conn.Close()
+	db.pool.Close()
+	return nil
 }
 
 func (db *DB) migrate() error {
@@ -46,14 +47,14 @@ func (db *DB) migrate() error {
 			trust_level TEXT NOT NULL DEFAULT 'untrusted',
 			description TEXT DEFAULT '',
 			owner TEXT DEFAULT '',
-			last_active DATETIME,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			certificate_expiry DATETIME,
+			last_active TIMESTAMP,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			certificate_expiry TIMESTAMP,
 			policies TEXT DEFAULT '[]',
 			tags TEXT DEFAULT '[]',
 			requests_today INTEGER DEFAULT 0,
-			avg_latency_ms REAL DEFAULT 0,
-			error_rate REAL DEFAULT 0
+			avg_latency_ms DOUBLE PRECISION DEFAULT 0,
+			error_rate DOUBLE PRECISION DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS policies (
 			id TEXT PRIMARY KEY,
@@ -62,14 +63,14 @@ func (db *DB) migrate() error {
 			status TEXT NOT NULL DEFAULT 'draft',
 			rego_code TEXT DEFAULT '',
 			assigned_agents INTEGER DEFAULT 0,
-			last_modified DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			created_by TEXT DEFAULT '',
 			violations INTEGER DEFAULT 0,
 			category TEXT DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS audit_events (
 			id TEXT PRIMARY KEY,
-			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			agent_id TEXT,
 			agent_name TEXT,
 			event_type TEXT NOT NULL,
@@ -84,10 +85,10 @@ func (db *DB) migrate() error {
 			spiffe_id TEXT NOT NULL,
 			agent_id TEXT,
 			certificate TEXT NOT NULL,
-			issued_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			expires_at DATETIME NOT NULL,
+			issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			expires_at TIMESTAMP NOT NULL,
 			revoked INTEGER DEFAULT 0,
-			revoked_at DATETIME
+			revoked_at TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS trust_edges (
 			id TEXT PRIMARY KEY,
@@ -104,8 +105,9 @@ func (db *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_events(severity)`,
 		`CREATE INDEX IF NOT EXISTS idx_certs_spiffe ON certificates(spiffe_id)`,
 	}
+	ctx := context.Background()
 	for _, m := range migrations {
-		if _, err := db.conn.Exec(m); err != nil {
+		if _, err := db.pool.Exec(ctx, m); err != nil {
 			return fmt.Errorf("migration: %w\nSQL: %s", err, m)
 		}
 	}
@@ -120,18 +122,22 @@ func (db *DB) migrate() error {
 func (db *DB) ListAgents(statusFilter, typeFilter string) ([]models.Agent, error) {
 	query := "SELECT id, name, spiffe_id, type, status, trust_level, description, owner, last_active, created_at, certificate_expiry, policies, tags, requests_today, avg_latency_ms, error_rate FROM agents WHERE 1=1"
 	args := []interface{}{}
+	paramIdx := 1
 
 	if statusFilter != "" && statusFilter != "all" {
-		query += " AND status = ?"
+		query += fmt.Sprintf(" AND status = $%d", paramIdx)
 		args = append(args, statusFilter)
+		paramIdx++
 	}
 	if typeFilter != "" && typeFilter != "all" {
-		query += " AND type = ?"
+		query += fmt.Sprintf(" AND type = $%d", paramIdx)
 		args = append(args, typeFilter)
+		paramIdx++
 	}
 	query += " ORDER BY last_active DESC"
 
-	rows, err := db.conn.Query(query, args...)
+	ctx := context.Background()
+	rows, err := db.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -149,10 +155,11 @@ func (db *DB) ListAgents(statusFilter, typeFilter string) ([]models.Agent, error
 }
 
 func (db *DB) GetAgent(id string) (*models.Agent, error) {
-	row := db.conn.QueryRow("SELECT id, name, spiffe_id, type, status, trust_level, description, owner, last_active, created_at, certificate_expiry, policies, tags, requests_today, avg_latency_ms, error_rate FROM agents WHERE id = ?", id)
+	ctx := context.Background()
+	row := db.pool.QueryRow(ctx, "SELECT id, name, spiffe_id, type, status, trust_level, description, owner, last_active, created_at, certificate_expiry, policies, tags, requests_today, avg_latency_ms, error_rate FROM agents WHERE id = $1", id)
 	a, err := scanAgentRow(row)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
@@ -163,9 +170,10 @@ func (db *DB) GetAgent(id string) (*models.Agent, error) {
 func (db *DB) CreateAgent(a *models.Agent) error {
 	policiesJSON, _ := json.Marshal(a.Policies)
 	tagsJSON, _ := json.Marshal(a.Tags)
-	_, err := db.conn.Exec(
+	ctx := context.Background()
+	_, err := db.pool.Exec(ctx,
 		`INSERT INTO agents (id, name, spiffe_id, type, status, trust_level, description, owner, last_active, created_at, certificate_expiry, policies, tags, requests_today, avg_latency_ms, error_rate)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 		a.ID, a.Name, a.SpiffeID, a.Type, a.Status, a.TrustLevel, a.Description, a.Owner,
 		a.LastActive, a.CreatedAt, a.CertificateExpiry,
 		string(policiesJSON), string(tagsJSON),
@@ -175,20 +183,22 @@ func (db *DB) CreateAgent(a *models.Agent) error {
 }
 
 func (db *DB) UpdateAgentStatus(id string, status models.AgentStatus, trustLevel models.TrustLevel) error {
-	_, err := db.conn.Exec("UPDATE agents SET status = ?, trust_level = ?, last_active = ? WHERE id = ?",
+	ctx := context.Background()
+	_, err := db.pool.Exec(ctx, "UPDATE agents SET status = $1, trust_level = $2, last_active = $3 WHERE id = $4",
 		status, trustLevel, time.Now(), id)
 	return err
 }
 
 func (db *DB) DeleteAgent(id string) error {
-	_, err := db.conn.Exec("DELETE FROM agents WHERE id = ?", id)
+	ctx := context.Background()
+	_, err := db.pool.Exec(ctx, "DELETE FROM agents WHERE id = $1", id)
 	return err
 }
 
-func scanAgent(rows *sql.Rows) (models.Agent, error) {
+func scanAgent(rows pgx.Rows) (models.Agent, error) {
 	var a models.Agent
 	var policiesStr, tagsStr string
-	var lastActive, createdAt, certExpiry sql.NullTime
+	var lastActive, createdAt, certExpiry *time.Time
 
 	err := rows.Scan(
 		&a.ID, &a.Name, &a.SpiffeID, &a.Type, &a.Status, &a.TrustLevel,
@@ -199,24 +209,24 @@ func scanAgent(rows *sql.Rows) (models.Agent, error) {
 	if err != nil {
 		return a, err
 	}
-	if lastActive.Valid {
-		a.LastActive = lastActive.Time
+	if lastActive != nil {
+		a.LastActive = *lastActive
 	}
-	if createdAt.Valid {
-		a.CreatedAt = createdAt.Time
+	if createdAt != nil {
+		a.CreatedAt = *createdAt
 	}
-	if certExpiry.Valid {
-		a.CertificateExpiry = certExpiry.Time
+	if certExpiry != nil {
+		a.CertificateExpiry = *certExpiry
 	}
 	json.Unmarshal([]byte(policiesStr), &a.Policies)
 	json.Unmarshal([]byte(tagsStr), &a.Tags)
 	return a, nil
 }
 
-func scanAgentRow(row *sql.Row) (models.Agent, error) {
+func scanAgentRow(row pgx.Row) (models.Agent, error) {
 	var a models.Agent
 	var policiesStr, tagsStr string
-	var lastActive, createdAt, certExpiry sql.NullTime
+	var lastActive, createdAt, certExpiry *time.Time
 
 	err := row.Scan(
 		&a.ID, &a.Name, &a.SpiffeID, &a.Type, &a.Status, &a.TrustLevel,
@@ -227,14 +237,14 @@ func scanAgentRow(row *sql.Row) (models.Agent, error) {
 	if err != nil {
 		return a, err
 	}
-	if lastActive.Valid {
-		a.LastActive = lastActive.Time
+	if lastActive != nil {
+		a.LastActive = *lastActive
 	}
-	if createdAt.Valid {
-		a.CreatedAt = createdAt.Time
+	if createdAt != nil {
+		a.CreatedAt = *createdAt
 	}
-	if certExpiry.Valid {
-		a.CertificateExpiry = certExpiry.Time
+	if certExpiry != nil {
+		a.CertificateExpiry = *certExpiry
 	}
 	json.Unmarshal([]byte(policiesStr), &a.Policies)
 	json.Unmarshal([]byte(tagsStr), &a.Tags)
@@ -246,7 +256,8 @@ func scanAgentRow(row *sql.Row) (models.Agent, error) {
 // ================================================================
 
 func (db *DB) ListPolicies() ([]models.Policy, error) {
-	rows, err := db.conn.Query("SELECT id, name, description, status, rego_code, assigned_agents, last_modified, created_by, violations, category FROM policies ORDER BY last_modified DESC")
+	ctx := context.Background()
+	rows, err := db.pool.Query(ctx, "SELECT id, name, description, status, rego_code, assigned_agents, last_modified, created_by, violations, category FROM policies ORDER BY last_modified DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -255,13 +266,13 @@ func (db *DB) ListPolicies() ([]models.Policy, error) {
 	var policies []models.Policy
 	for rows.Next() {
 		var p models.Policy
-		var lastMod sql.NullTime
+		var lastMod *time.Time
 		err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.Status, &p.RegoCode, &p.AssignedAgents, &lastMod, &p.CreatedBy, &p.Violations, &p.Category)
 		if err != nil {
 			return nil, err
 		}
-		if lastMod.Valid {
-			p.LastModified = lastMod.Time
+		if lastMod != nil {
+			p.LastModified = *lastMod
 		}
 		policies = append(policies, p)
 	}
@@ -270,33 +281,36 @@ func (db *DB) ListPolicies() ([]models.Policy, error) {
 
 func (db *DB) GetPolicy(id string) (*models.Policy, error) {
 	var p models.Policy
-	var lastMod sql.NullTime
-	err := db.conn.QueryRow("SELECT id, name, description, status, rego_code, assigned_agents, last_modified, created_by, violations, category FROM policies WHERE id = ?", id).
+	var lastMod *time.Time
+	ctx := context.Background()
+	err := db.pool.QueryRow(ctx, "SELECT id, name, description, status, rego_code, assigned_agents, last_modified, created_by, violations, category FROM policies WHERE id = $1", id).
 		Scan(&p.ID, &p.Name, &p.Description, &p.Status, &p.RegoCode, &p.AssignedAgents, &lastMod, &p.CreatedBy, &p.Violations, &p.Category)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if lastMod.Valid {
-		p.LastModified = lastMod.Time
+	if lastMod != nil {
+		p.LastModified = *lastMod
 	}
 	return &p, nil
 }
 
 func (db *DB) CreatePolicy(p *models.Policy) error {
-	_, err := db.conn.Exec(
+	ctx := context.Background()
+	_, err := db.pool.Exec(ctx,
 		`INSERT INTO policies (id, name, description, status, rego_code, assigned_agents, last_modified, created_by, violations, category)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		p.ID, p.Name, p.Description, p.Status, p.RegoCode, p.AssignedAgents, p.LastModified, p.CreatedBy, p.Violations, p.Category,
 	)
 	return err
 }
 
 func (db *DB) UpdatePolicy(p *models.Policy) error {
-	_, err := db.conn.Exec(
-		`UPDATE policies SET name=?, description=?, status=?, rego_code=?, assigned_agents=?, last_modified=?, violations=?, category=? WHERE id=?`,
+	ctx := context.Background()
+	_, err := db.pool.Exec(ctx,
+		`UPDATE policies SET name=$1, description=$2, status=$3, rego_code=$4, assigned_agents=$5, last_modified=$6, violations=$7, category=$8 WHERE id=$9`,
 		p.Name, p.Description, p.Status, p.RegoCode, p.AssignedAgents, time.Now(), p.Violations, p.Category, p.ID,
 	)
 	return err
@@ -309,18 +323,22 @@ func (db *DB) UpdatePolicy(p *models.Policy) error {
 func (db *DB) ListAuditEvents(severityFilter, typeFilter string) ([]models.AuditEvent, error) {
 	query := "SELECT id, timestamp, agent_id, agent_name, event_type, severity, description, source_ip, trace_id, metadata FROM audit_events WHERE 1=1"
 	args := []interface{}{}
+	paramIdx := 1
 
 	if severityFilter != "" && severityFilter != "all" {
-		query += " AND severity = ?"
+		query += fmt.Sprintf(" AND severity = $%d", paramIdx)
 		args = append(args, severityFilter)
+		paramIdx++
 	}
 	if typeFilter != "" && typeFilter != "all" {
-		query += " AND event_type = ?"
+		query += fmt.Sprintf(" AND event_type = $%d", paramIdx)
 		args = append(args, typeFilter)
+		paramIdx++
 	}
 	query += " ORDER BY timestamp DESC LIMIT 100"
 
-	rows, err := db.conn.Query(query, args...)
+	ctx := context.Background()
+	rows, err := db.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -329,14 +347,14 @@ func (db *DB) ListAuditEvents(severityFilter, typeFilter string) ([]models.Audit
 	var events []models.AuditEvent
 	for rows.Next() {
 		var e models.AuditEvent
-		var ts sql.NullTime
+		var ts *time.Time
 		var metaStr string
 		err := rows.Scan(&e.ID, &ts, &e.AgentID, &e.AgentName, &e.EventType, &e.Severity, &e.Description, &e.SourceIP, &e.TraceID, &metaStr)
 		if err != nil {
 			return nil, err
 		}
-		if ts.Valid {
-			e.Timestamp = ts.Time
+		if ts != nil {
+			e.Timestamp = *ts
 		}
 		json.Unmarshal([]byte(metaStr), &e.Metadata)
 		events = append(events, e)
@@ -346,9 +364,10 @@ func (db *DB) ListAuditEvents(severityFilter, typeFilter string) ([]models.Audit
 
 func (db *DB) CreateAuditEvent(e *models.AuditEvent) error {
 	metaJSON, _ := json.Marshal(e.Metadata)
-	_, err := db.conn.Exec(
+	ctx := context.Background()
+	_, err := db.pool.Exec(ctx,
 		`INSERT INTO audit_events (id, timestamp, agent_id, agent_name, event_type, severity, description, source_ip, trace_id, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		e.ID, e.Timestamp, e.AgentID, e.AgentName, e.EventType, e.Severity, e.Description, e.SourceIP, e.TraceID, string(metaJSON),
 	)
 	return err
@@ -359,7 +378,8 @@ func (db *DB) CreateAuditEvent(e *models.AuditEvent) error {
 // ================================================================
 
 func (db *DB) ListTrustEdges() ([]models.TrustGraphEdge, error) {
-	rows, err := db.conn.Query("SELECT id, source, target, trust_level, protocol, requests_per_min FROM trust_edges")
+	ctx := context.Background()
+	rows, err := db.pool.Query(ctx, "SELECT id, source, target, trust_level, protocol, requests_per_min FROM trust_edges")
 	if err != nil {
 		return nil, err
 	}
@@ -377,8 +397,13 @@ func (db *DB) ListTrustEdges() ([]models.TrustGraphEdge, error) {
 }
 
 func (db *DB) CreateTrustEdge(e *models.TrustGraphEdge) error {
-	_, err := db.conn.Exec(
-		"INSERT OR REPLACE INTO trust_edges (id, source, target, trust_level, protocol, requests_per_min) VALUES (?, ?, ?, ?, ?, ?)",
+	ctx := context.Background()
+	// Postgres uses INSERT ... ON CONFLICT instead of SQLite INSERT OR REPLACE
+	_, err := db.pool.Exec(ctx,
+		`INSERT INTO trust_edges (id, source, target, trust_level, protocol, requests_per_min) 
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (id) DO UPDATE SET 
+		 source=$2, target=$3, trust_level=$4, protocol=$5, requests_per_min=$6`,
 		e.ID, e.Source, e.Target, e.TrustLevel, e.Protocol, e.RequestsPerMin,
 	)
 	return err
@@ -389,32 +414,40 @@ func (db *DB) CreateTrustEdge(e *models.TrustGraphEdge) error {
 // ================================================================
 
 func (db *DB) StoreCertificate(serial, spiffeID, agentID, certPEM string, issuedAt, expiresAt time.Time) error {
-	_, err := db.conn.Exec(
-		"INSERT INTO certificates (serial, spiffe_id, agent_id, certificate, issued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+	ctx := context.Background()
+	_, err := db.pool.Exec(ctx,
+		"INSERT INTO certificates (serial, spiffe_id, agent_id, certificate, issued_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6)",
 		serial, spiffeID, agentID, certPEM, issuedAt, expiresAt,
 	)
 	return err
 }
 
 func (db *DB) RevokeCertificate(serial string) error {
-	_, err := db.conn.Exec("UPDATE certificates SET revoked = 1, revoked_at = ? WHERE serial = ?", time.Now(), serial)
+	ctx := context.Background()
+	_, err := db.pool.Exec(ctx, "UPDATE certificates SET revoked = 1, revoked_at = $1 WHERE serial = $2", time.Now(), serial)
 	return err
 }
 
 func (db *DB) GetAgentCount() int {
 	var count int
-	db.conn.QueryRow("SELECT COUNT(*) FROM agents").Scan(&count)
+	ctx := context.Background()
+	db.pool.QueryRow(ctx, "SELECT COUNT(*) FROM agents").Scan(&count)
 	return count
 }
 
 func (db *DB) GetActiveSessionCount() int {
 	var count int
-	db.conn.QueryRow("SELECT COUNT(*) FROM agents WHERE status = 'active'").Scan(&count)
+	ctx := context.Background()
+	db.pool.QueryRow(ctx, "SELECT COUNT(*) FROM agents WHERE status = 'active'").Scan(&count)
 	return count
 }
 
 func (db *DB) GetViolationCount() int {
 	var count int
-	db.conn.QueryRow("SELECT SUM(violations) FROM policies").Scan(&count)
+	ctx := context.Background()
+	err := db.pool.QueryRow(ctx, "SELECT COALESCE(SUM(violations), 0) FROM policies").Scan(&count)
+	if err != nil {
+		return 0
+	}
 	return count
 }

@@ -17,7 +17,6 @@ import (
 
 const (
 	httpPort    = ":8080"
-	dbPath      = "aegis.db"
 	trustDomain = "aegis.io"
 )
 
@@ -40,8 +39,15 @@ func main() {
 	`)
 
 	// === Initialize Database ===
-	log.Println("[INIT] Opening database:", dbPath)
-	db, err := store.NewDB(dbPath)
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://aegis_admin:secretpassword@localhost:5432/aegis_db?sslmode=disable"
+		log.Println("[INIT] No DATABASE_URL set, defaulting to local PostgreSQL")
+	} else {
+		log.Println("[INIT] Connecting to PostgreSQL via DATABASE_URL")
+	}
+
+	db, err := store.NewDB(dbURL)
 	if err != nil {
 		log.Fatalf("[FATAL] Database initialization failed: %v", err)
 	}

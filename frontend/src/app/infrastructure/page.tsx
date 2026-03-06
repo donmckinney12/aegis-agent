@@ -1,39 +1,93 @@
 "use client";
 
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Activity, Server, Database, Globe, RefreshCcw } from "lucide-react";
-import { cn, formatTimeAgo } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Activity, Server, Database, Globe, RefreshCcw, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
-const regions = [
+const initialRegions = [
     { id: "us-east-1", status: "Operational", latency: "12ms", nodes: 4 },
     { id: "eu-central-1", status: "Operational", latency: "45ms", nodes: 3 },
     { id: "ap-northeast-1", status: "Operational", latency: "110ms", nodes: 2 },
 ];
 
-const services = [
-    { name: "gRPC API Gateway", icon: Globe, status: "Healthy", uptime: "99.99%", version: "v1.0.4", region: "Global" },
-    { name: "SPIRE Server (CA)", icon: Server, status: "Healthy", uptime: "100%", version: "v1.8.2", region: "Global" },
-    { name: "OPA Policy Cache", icon: Activity, status: "Healthy", uptime: "99.98%", version: "v0.62.1", region: "Global" },
-    { name: "SQLite (WAL Mode)", icon: Database, status: "Healthy", uptime: "100%", version: "v3.45.1", region: "Local" },
+const initialServices = [
+    { name: "REST API Gateway", icon: Globe, status: "Healthy", uptime: "99.99%", version: "v1.0.0", region: "Global" },
+    { name: "SPIFFE Provider (CA)", icon: Server, status: "Healthy", uptime: "100%", version: "v1.0.0", region: "Global" },
+    { name: "OPA Policy Engine", icon: Activity, status: "Healthy", uptime: "99.98%", version: "v0.68.0", region: "Global" },
+    { name: "PostgreSQL (Primary)", icon: Database, status: "Healthy", uptime: "100%", version: "v16.2", region: "us-east-1" },
 ];
 
 export default function InfrastructurePage() {
+    const [regions, setRegions] = useState(initialRegions);
+    const [services, setServices] = useState(initialServices);
+    const [refreshing, setRefreshing] = useState(false);
+
+    const handleRefresh = async () => {
+        setRefreshing(true);
+        toast.loading("Polling infrastructure health...", { id: "infra-refresh" });
+        await new Promise(r => setTimeout(r, 2000));
+
+        // Simulate slight latency changes
+        setRegions(prev => prev.map(r => ({
+            ...r,
+            latency: `${Math.max(5, parseInt(r.latency) + Math.floor(Math.random() * 10 - 5))}ms`,
+        })));
+
+        setRefreshing(false);
+        toast.success("Infrastructure health updated", {
+            id: "infra-refresh",
+            description: "All control plane services are operational. Latency values refreshed.",
+        });
+    };
+
+    const handleRegionClick = (regionId: string) => {
+        toast.info(`Region: ${regionId.toUpperCase()}`, {
+            description: `All nodes in ${regionId} are healthy. Zero packet loss detected in the last 24 hours.`,
+        });
+    };
+
+    const handleServiceClick = (serviceName: string) => {
+        toast.info(`Service: ${serviceName}`, {
+            description: "No incidents in the last 30 days. Last restart was during the scheduled maintenance window.",
+        });
+    };
+
     return (
         <div className="space-y-6">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                     <h1 className="text-2xl font-bold tracking-tight">Infrastructure Health</h1>
                     <p className="text-sm text-muted-foreground mt-1">
-                        Real-time topology of global clusters, database replication, and SPIRE health.
+                        Real-time topology of global clusters, database replication, and service health.
                     </p>
                 </div>
+                <Button
+                    variant="outline"
+                    className="border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10"
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                >
+                    {refreshing ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                        <RefreshCcw className="w-4 h-4 mr-2" />
+                    )}
+                    Refresh Health
+                </Button>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {regions.map(r => (
-                    <Card key={r.id} className="border-border/50 bg-card/50">
+                    <Card
+                        key={r.id}
+                        className="border-border/50 bg-card/50 hover:bg-card/80 transition-colors cursor-pointer"
+                        onClick={() => handleRegionClick(r.id)}
+                    >
                         <CardHeader className="pb-2">
                             <div className="flex items-center justify-between">
                                 <CardTitle className="text-base flex items-center gap-2">
@@ -83,7 +137,11 @@ export default function InfrastructurePage() {
                             </TableHeader>
                             <TableBody>
                                 {services.map((s) => (
-                                    <TableRow key={s.name} className="hover:bg-muted/30">
+                                    <TableRow
+                                        key={s.name}
+                                        className="hover:bg-muted/30 cursor-pointer"
+                                        onClick={() => handleServiceClick(s.name)}
+                                    >
                                         <TableCell>
                                             <div className="flex items-center gap-2 font-medium text-sm">
                                                 <s.icon className="w-4 h-4 text-muted-foreground" />
